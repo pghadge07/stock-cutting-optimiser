@@ -82,20 +82,30 @@ allow_rotation = st.checkbox("Allow rotation (90°) when generating patterns", v
 def solve_cutting_stock(demand, stock_options, allow_rotation=False):
 
     # FORCE CLEAN DATA TYPES (fixes float→int crash)
-    demand = demand.astype({
-        "width": "int",
-        "length": "int",
-        "qty": "int",
-        "thickness": "float",
-        "grade": "string",
-    })
+    # ---------------- CLEAN DEMAND DATA ----------------
+    required_cols = ["width", "length", "qty"]
 
-    stock_options = stock_options.astype({
-        "width": "int",
-        "length": "int",
-        "thickness": "float",
-        "grade": "string",
-    })
+    # Drop rows with missing required values
+    demand = demand.dropna(subset=required_cols)
+
+    # Convert safely
+    demand["width"] = demand["width"].astype(int)
+    demand["length"] = demand["length"].astype(int)
+    demand["qty"] = demand["qty"].astype(int)
+    demand["thickness"] = demand["thickness"].astype(float)
+    demand["grade"] = demand["grade"].astype(str)
+
+
+    # ---------------- CLEAN STOCK DATA ----------------
+    stock_required = ["width", "length"]
+
+    stock_options = stock_options.dropna(subset=stock_required)
+
+    stock_options["width"] = stock_options["width"].astype(int)
+    stock_options["length"] = stock_options["length"].astype(int)
+    stock_options["thickness"] = stock_options["thickness"].astype(float)
+    stock_options["grade"] = stock_options["grade"].astype(str)
+
 
     # Convert demand to internal format
     # Convert demand to internal format
@@ -255,14 +265,28 @@ def solve_cutting_stock(demand, stock_options, allow_rotation=False):
                 used_length = 0
                 produced = {}
                 rotation_map = {}
+                row_breakdown = []   # ✅ ADD THIS
 
                 for i, rows in enumerate(combo):
                     if rows == 0:
                         continue
+
                     j = next(j for j in compat_jobs if j["idx"] == job_ids[i])
+                    jid = j["idx"]
+
                     used_length += rows * j["length"]
-                    produced[j["idx"]] = rows * int(per_row[j["idx"]])
-                    rotation_map[j["idx"]] = False
+                    produced[jid] = rows * int(per_row[jid])
+                    rotation_map[jid] = False
+
+                    # ✅ ADD ROW BREAKDOWN
+                    row_breakdown.append({
+                        "jid": jid,
+                        "rotated": False,
+                        "per_row": per_row[jid],
+                        "rows": rows,
+                        "cut_w": j["width"],
+                        "cut_l": j["length"]
+                    })
 
                 if used_length > s["length"]:
                     continue
@@ -281,6 +305,7 @@ def solve_cutting_stock(demand, stock_options, allow_rotation=False):
                     "stock_length": s["length"],
                     "produced": produced,
                     "rotation_map": rotation_map,
+                    "row_breakdown": row_breakdown,   # ✅ ADD THIS
                     "waste_area": waste_area,
                 })
 
