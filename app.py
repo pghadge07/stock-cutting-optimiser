@@ -454,7 +454,8 @@ if st.button("Run Optimizer"):
                     else:
                         stock_name = f"Stock {stock_row_idx}"
 
-                    fig, ax = plt.subplots(figsize=(6, 4))
+                    fig, ax = plt.subplots(figsize=(8, 3.2))
+
                     ax.set_xlim(0, s_width)
                     ax.set_ylim(0, s_length)
                     ax.set_title(f"Cutting Layout – {stock_name} ({s_width}×{s_length} mm)", fontsize=12)
@@ -534,6 +535,8 @@ if st.button("Run Optimizer"):
                     # ----------------------------
                     # Compute & draw exact waste polygons (Option A - grid placement)
                     # ----------------------------
+                    waste_legend = []   # <-- ADD THIS
+
                     try:
                         from shapely.geometry import box as shapely_box, Polygon, MultiPolygon
                         from shapely.ops import polygonize, unary_union
@@ -587,14 +590,22 @@ if st.button("Run Optimizer"):
                                 hh = maxy - miny
                                 area = poly.area
 
+                                waste_legend.append({
+                                    "name": f"Waste {len(waste_legend) + 1}",
+                                    "w": int(wb),
+                                    "h": int(hh),
+                                    "area": int(area)
+                                })
+
+
                                 # label position
                                 cx, cy = poly.representative_point().x, poly.representative_point().y
 
-                                ax.text(
-                                    cx, cy,
-                                    f"WASTE\n{int(wb)}×{int(hh)} mm\n{int(area)} mm²",
-                                    ha='center', va='center', fontsize=8, color='black'
-                                )
+                                # ax.text(
+                                #     cx, cy,
+                                #     f"WASTE\n{int(wb)}×{int(hh)} mm\n{int(area)} mm²",
+                                #     ha='center', va='center', fontsize=8, color='black'
+                                # )
 
 
                         else:
@@ -602,8 +613,24 @@ if st.button("Run Optimizer"):
                             if y_cursor < s_length:
                                 waste_h = s_length - y_cursor
                                 waste_w = s_width
-                                ax.add_patch(patches.Rectangle((0, y_cursor), waste_w, waste_h, facecolor='lightgray', alpha=0.35, edgecolor='black', linewidth=1))
-                                ax.text(waste_w/2, y_cursor + waste_h/2, f"WASTE\n{int(waste_w)}×{int(waste_h)} mm", ha='center', va='center', fontsize=9)
+                                ax.add_patch(
+                                    patches.Rectangle(
+                                        (0, y_cursor),
+                                        waste_w,
+                                        waste_h,
+                                        facecolor='orange',
+                                        alpha=0.35,
+                                        edgecolor='black',
+                                        linewidth=1
+                                    )
+                                )
+                                waste_legend.append({
+                                    "name": f"Waste {len(waste_legend) + 1}",
+                                    "w": int(waste_w),
+                                    "h": int(waste_h),
+                                    "area": int(waste_w * waste_h)
+                                })
+
                     else:
                         # shapely not available or no placed rects — fallback to simple bottom waste rectangle
                         if y_cursor < s_length:
@@ -616,11 +643,18 @@ if st.button("Run Optimizer"):
                                     edgecolor='black', linewidth=1
                                 )
                             )
-                            # Center position
-                            cx = waste_w / 2
-                            cy = y_cursor + waste_h / 2
-                            waste_text = f"WASTE\n{int(waste_w)}×{int(waste_h)} mm\n{int(waste_w * waste_h)} mm²"
-                            ax.text(cx, cy, waste_text, ha='center', va='center', fontsize=9, color='black')
+                            waste_legend.append({
+                                "name": f"Waste {len(waste_legend) + 1}",
+                                "w": int(waste_w),
+                                "h": int(waste_h),
+                                "area": int(waste_w * waste_h)
+                            })
+
+                            # # Center position
+                            # cx = waste_w / 2
+                            # cy = y_cursor + waste_h / 2
+                            # waste_text = f"WASTE\n{int(waste_w)}×{int(waste_h)} mm\n{int(waste_w * waste_h)} mm²"
+                            # # ax.text(cx, cy, waste_text, ha='center', va='center', fontsize=9, color='black')
 
                     # ---------------------------------------------------
                     # Build LEGEND inside the plot (top-right corner)
@@ -642,9 +676,23 @@ if st.button("Run Optimizer"):
                         handles.append(patch)
                         labels.append(f"{name} – {dims}")
 
+                    # ---------------- ADD WASTE TO LEGEND ----------------
+                    for w in waste_legend:
+                        patch = patches.Patch(
+                            facecolor='lightgray',
+                            edgecolor='black',
+                            alpha=0.35,
+                            label=f"{w['name']} – {w['w']}×{w['h']} mm ({w['area']} mm²)"
+                        )
+                        handles.append(patch)
+                        labels.append(
+                            f"{w['name']} – {w['w']}×{w['h']} mm ({w['area']} mm²)"
+                        )
+
+
                     # Shrink plot to make space for legend on the right
                     box = ax.get_position()
-                    ax.set_position([box.x0, box.y0, box.width * 0.78, box.height])   # 22% extra space on right
+                    # ax.set_position([box.x0, box.y0, box.width * 0.78, box.height])   # 22% extra space on right
 
                     ax.legend(
                         handles, labels,
@@ -663,4 +711,5 @@ if st.button("Run Optimizer"):
                         fontsize=9, color='red', ha='center'
                     )
 
-                    st.pyplot(fig)
+                    st.pyplot(fig, use_container_width=True)
+
