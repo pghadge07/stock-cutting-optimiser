@@ -332,6 +332,11 @@ def solve_cutting_stock(demand, stock_options, allow_rotation=False):
 
     return status, pattern_vars, jobs, all_patterns
 
+def transpose_wl(df):
+    df2 = df.copy()
+    df2["width"], df2["length"] = df2["length"], df2["width"]
+    return df2
+
 
 # ======================================================
 #  RUN SOLVER BUTTON
@@ -341,13 +346,82 @@ st.subheader("🚀 Run Cutting Stock Optimization")
 if st.button("Run Optimizer"):
     with st.spinner("Solving..."):
 
-        status, patterns, jobs, all_patterns = solve_cutting_stock(
+        # ---------------- ROW-BASED SOLUTION (current behavior) ----------------
+        status_row, patterns_row, jobs_row, _ = solve_cutting_stock(
             st.session_state["demand_list"],
             st.session_state["stock_list"],
             allow_rotation=allow_rotation
         )
 
+        # ---------------- COLUMN-BASED SOLUTION (transpose geometry) ----------------
+        demand_col = transpose_wl(st.session_state["demand_list"])
+        stock_col  = transpose_wl(st.session_state["stock_list"])
+
+        status_col, patterns_col, jobs_col, _ = solve_cutting_stock(
+            demand_col,
+            stock_col,
+            allow_rotation=allow_rotation
+        )
+
+        def total_jobs(patterns):
+            total = 0
+            for p, v in patterns:
+                count = int(pulp.value(v))
+                if count > 0:
+                    total += sum(p["produced"].values()) * count
+            return total
+
+
+        jobs_row_total = total_jobs(patterns_row)
+        jobs_col_total = total_jobs(patterns_col)
+
+        # ================= SELECT BEST GEOMETRY =================
+        def solution_metrics(patterns):
+            sheets = 0
+            waste  = 0
+            produced = 0
+            for p, v in patterns:
+                c = int(pulp.value(v))
+                if c > 0:
+                    sheets += c
+                    waste  += p["waste_area"] * c
+                    produced += sum(p["produced"].values()) * c
+            return sheets, waste, produced
+
+
+        row_sheets, row_waste, row_prod = solution_metrics(patterns_row)
+        col_sheets, col_waste, col_prod = solution_metrics(patterns_col)
+
+        # 1️⃣ PRIMARY: fewer sheets
+        if col_sheets < row_sheets:
+            selected_mode = "COLUMN-WISE"
+            status   = status_col
+            patterns = patterns_col
+            jobs     = jobs_col
+            geometry_note = "📐 Column-wise cutting selected (fewer sheets used)"
+
+        # 2️⃣ SECONDARY: same sheets → less waste
+        elif col_sheets == row_sheets and col_waste < row_waste:
+            selected_mode = "COLUMN-WISE"
+            status   = status_col
+            patterns = patterns_col
+            jobs     = jobs_col
+            geometry_note = "📐 Column-wise cutting selected (less waste)"
+
+        # 3️⃣ FALLBACK: row-wise
+        else:
+            selected_mode = "ROW-WISE"
+            status   = status_row
+            patterns = patterns_row
+            jobs     = jobs_row
+            geometry_note = "📐 Row-wise cutting selected (tie or better)"
+
+
+
         st.success(f"Solver Status: {status}")
+
+        st.info(geometry_note)
+
 
         if status not in ["Optimal", "Feasible"]:
             st.error("No feasible solution found.")
@@ -707,7 +781,7 @@ if st.button("Run Optimizer"):
                     # Summary waste annotation (keeps original red text)
                     ax.text(
                         s_width/2, s_length - 8,
-                        f"Waste = {p['waste_area']} mm²",
+                        f"Total Waste = {p['waste_area']} mm²",
                         fontsize=9, color='red', ha='center'
                     )
 
