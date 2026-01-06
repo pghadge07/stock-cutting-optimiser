@@ -86,7 +86,7 @@ def solve_cutting_stock(demand, stock_options, allow_rotation=False):
     required_cols = ["width", "length", "qty"]
 
     # Drop rows with missing required values
-    demand = demand.dropna(subset=required_cols)
+    demand = demand.dropna(subset=required_cols).reset_index(drop=True)
 
     # Convert safely
     demand["width"] = demand["width"].astype(int)
@@ -99,7 +99,7 @@ def solve_cutting_stock(demand, stock_options, allow_rotation=False):
     # ---------------- CLEAN STOCK DATA ----------------
     stock_required = ["width", "length"]
 
-    stock_options = stock_options.dropna(subset=stock_required)
+    stock_options = stock_options.dropna(subset=stock_required).reset_index(drop=True)
 
     stock_options["width"] = stock_options["width"].astype(int)
     stock_options["length"] = stock_options["length"].astype(int)
@@ -786,4 +786,5 @@ if st.button("Run Optimizer"):
                     )
 
                     st.pyplot(fig, use_container_width=True)
+
 
