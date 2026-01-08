@@ -5,6 +5,8 @@ import itertools
 import pulp
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+from matplotlib.backends.backend_pdf import PdfPages
+import io
 
 # ------------------------------------------------------
 #  PAGE CONFIG
@@ -41,14 +43,13 @@ if "stock_list" not in st.session_state:
 col1, col2 = st.columns(2)
 
 # ---------------- Demand Editor ----------------
-# ---------------- Demand Editor ----------------
 with col1:
     st.subheader("📦 Demand List")
 
     demand_df = st.data_editor(
         st.session_state["demand_list"][["grade", "thickness", "width", "length", "qty"]],
         num_rows="dynamic",
-        width="stretch",
+        use_container_width=True,
         key="editable_demand"
     )
     if st.button("Save Demand"):
@@ -63,7 +64,7 @@ with col2:
     stock_df = st.data_editor(
         st.session_state["stock_list"][["grade", "thickness", "width", "length"]],
         num_rows="dynamic",
-        width="stretch",
+        use_container_width=True,
         key="editable_stock"
     )
     if st.button("Save Stock"):
@@ -76,10 +77,17 @@ st.divider()
 # Rotation toggle
 allow_rotation = st.checkbox("Allow rotation (90°) when generating patterns", value=False)
 
+# Optimization strategy selector
+optimization_strategy = st.selectbox(
+    "Optimization Strategy:",
+    options=["minimize_waste", "minimize_sheets"],
+    format_func=lambda x: "🗑️ Minimize Waste" if x == "minimize_waste" else "📄 Minimize Sheets"
+)
+
 # ======================================================
-#  CUTTING STOCK SOLVER FUNCTION (now supports rotation toggle)
+#  CUTTING STOCK SOLVER FUNCTION (demand-based only)
 # ======================================================
-def solve_cutting_stock(demand, stock_options, allow_rotation=False):
+def solve_cutting_stock(demand, stock_options, allow_rotation=False, optimization_strategy="minimize_waste"):
 
     # FORCE CLEAN DATA TYPES (fixes float→int crash)
     # ---------------- CLEAN DEMAND DATA ----------------
@@ -108,7 +116,6 @@ def solve_cutting_stock(demand, stock_options, allow_rotation=False):
 
 
     # Convert demand to internal format
-    # Convert demand to internal format
     jobs = []
     for idx, row in demand.iterrows():
         jobs.append({
@@ -123,7 +130,6 @@ def solve_cutting_stock(demand, stock_options, allow_rotation=False):
 
 
     # Convert stock to internal format (preserve row index)
-    # Convert stock to internal format
     stocks = []
     for idx, row in stock_options.iterrows():
         stocks.append({
@@ -265,7 +271,7 @@ def solve_cutting_stock(demand, stock_options, allow_rotation=False):
                 used_length = 0
                 produced = {}
                 rotation_map = {}
-                row_breakdown = []   # ✅ ADD THIS
+                row_breakdown = []
 
                 for i, rows in enumerate(combo):
                     if rows == 0:
@@ -278,7 +284,6 @@ def solve_cutting_stock(demand, stock_options, allow_rotation=False):
                     produced[jid] = rows * int(per_row[jid])
                     rotation_map[jid] = False
 
-                    # ✅ ADD ROW BREAKDOWN
                     row_breakdown.append({
                         "jid": jid,
                         "rotated": False,
@@ -305,12 +310,12 @@ def solve_cutting_stock(demand, stock_options, allow_rotation=False):
                     "stock_length": s["length"],
                     "produced": produced,
                     "rotation_map": rotation_map,
-                    "row_breakdown": row_breakdown,   # ✅ ADD THIS
+                    "row_breakdown": row_breakdown,
                     "waste_area": waste_area,
                 })
 
     # ---------------- ILP MODEL ----------------
-    prob = pulp.LpProblem("CuttingStock_MinWaste_Rot", pulp.LpMinimize)
+    prob = pulp.LpProblem("CuttingStock_DemandBased", pulp.LpMinimize)
 
     pattern_vars = []
     for i, p in enumerate(all_patterns):
@@ -318,9 +323,12 @@ def solve_cutting_stock(demand, stock_options, allow_rotation=False):
         pattern_vars.append((p, var))
 
     # Objective
-    prob += pulp.lpSum(var * p["waste_area"] for p, var in pattern_vars)
+    if optimization_strategy == "minimize_waste":
+        prob += pulp.lpSum(var * p["waste_area"] for p, var in pattern_vars)
+    else:  # minimize_sheets
+        prob += pulp.lpSum(var for p, var in pattern_vars)
 
-    # Constraints
+    # Constraints - meet or exceed demand
     for j in jobs:
         prob += (
             pulp.lpSum(var * p["produced"].get(j["idx"], 0)
@@ -350,7 +358,8 @@ if st.button("Run Optimizer"):
         status_row, patterns_row, jobs_row, _ = solve_cutting_stock(
             st.session_state["demand_list"],
             st.session_state["stock_list"],
-            allow_rotation=allow_rotation
+            allow_rotation=allow_rotation,
+            optimization_strategy=optimization_strategy
         )
 
         # ---------------- COLUMN-BASED SOLUTION (transpose geometry) ----------------
@@ -360,7 +369,8 @@ if st.button("Run Optimizer"):
         status_col, patterns_col, jobs_col, _ = solve_cutting_stock(
             demand_col,
             stock_col,
-            allow_rotation=allow_rotation
+            allow_rotation=allow_rotation,
+            optimization_strategy=optimization_strategy
         )
 
         def total_jobs(patterns):
@@ -450,7 +460,7 @@ if st.button("Run Optimizer"):
                 stock_map_df = stock_map_df[["stock_index"] + cols_present + other_cols]
 
                 # Show final cleaned dataframe
-                st.dataframe(stock_map_df, width="stretch")
+                st.dataframe(stock_map_df, use_container_width=True)
 
 
             # ---------------- OUTPUT in old format ----------------
@@ -458,7 +468,8 @@ if st.button("Run Optimizer"):
             per_stock = {}          # aggregate by stock name
             produced_totals = {j['name']: 0 for j in jobs}
 
-            st.markdown("### === OPTIMAL CUTTING PLAN (Rotation Allowed, Minimized Waste) ===")
+            st.markdown("### === OPTIMAL CUTTING PLAN (Demand-Based) ===")
+                
             for p, var in patterns:
                 count = int(pulp.value(var))
                 if count <= 0:
@@ -492,8 +503,14 @@ if st.button("Run Optimizer"):
 
             # ---------------- PRODUCTION SUMMARY ----------------
             st.markdown("\n### === PRODUCTION SUMMARY ===")
+            
             for j in jobs:
-                st.write(f"- {j['name']}: Demand={j['qty']}  →  Produced={produced_totals[j['name']]}")
+                demand_qty = j['qty']
+                produced_qty = produced_totals[j['name']]
+                if produced_qty >= demand_qty:
+                    st.write(f"- {j['name']}: Demand={demand_qty}  →  Produced={produced_qty} ✓")
+                else:
+                    st.write(f"- {j['name']}: Demand={demand_qty}  →  Produced={produced_qty} ⚠️ SHORTFALL")
 
             # ---------------- WASTE STATS
             total_waste_area = sum(p['waste_area'] * int(pulp.value(v)) for p, v in patterns)
@@ -504,7 +521,7 @@ if st.button("Run Optimizer"):
             st.write(f"**Total waste percentage:** {waste_percent:.2f}%")
 
             # =========================================
-            # VISUALIZATION: Realistic Cutting Layouts on Stock Sheets (Grid-placement waste detection)
+            # VISUALIZATION: Realistic Cutting Layouts on Stock Sheets
             # =========================================
             st.subheader("🖼 Cutting Layout Visualizations")
 
@@ -513,6 +530,7 @@ if st.button("Run Optimizer"):
             if not used_patterns:
                 st.info("No used patterns to visualize.")
             else:
+                all_figures = []
                 for p, count in used_patterns:
 
                     s_width  = p['stock_width']
@@ -528,11 +546,11 @@ if st.button("Run Optimizer"):
                     else:
                         stock_name = f"Stock {stock_row_idx}"
 
-                    fig, ax = plt.subplots(figsize=(8, 3.2))
+                    fig, ax = plt.subplots(figsize=(10, 4))
 
                     ax.set_xlim(0, s_width)
                     ax.set_ylim(0, s_length)
-                    ax.set_title(f"Cutting Layout – {stock_name} ({s_width}×{s_length} mm)", fontsize=12)
+                    ax.set_title(f"Cutting Layout – {stock_name} ({s_width}×{s_length} mm) – Use {count} sheet(s)", fontsize=12)
                     ax.set_xlabel("Width (mm)")
                     ax.set_ylabel("Length (mm)")
                     ax.invert_yaxis()
@@ -547,8 +565,8 @@ if st.button("Run Optimizer"):
                     # For legend collection
                     legend_items = {}
 
-                    # Collect placed rectangles for exact waste geometry (grid layout coordinates)
-                    placed_rects = []   # each item: dict(x, y, w, h, jid, name, rotated)
+                    # Collect placed rectangles for exact waste geometry
+                    placed_rects = []
 
                     pattern_jobs = [(jid, qty) for jid, qty in p["produced"].items()]
                     pattern_jobs.sort(key=lambda x: jobs[x[0]]['length'])
@@ -557,7 +575,7 @@ if st.button("Run Optimizer"):
 
                         job = next(j for j in jobs if j['idx'] == jid)
 
-                        # extract all blocks for this job (blocks created in pattern gen)
+                        # extract all blocks for this job
                         blocks = [rb for rb in p.get("row_breakdown", []) if rb["jid"] == jid]
 
                         color = color_map(jid % 20)
@@ -588,7 +606,7 @@ if st.button("Run Optimizer"):
                                     )
                                     ax.add_patch(rect)
 
-                                    # record the placed rectangle for later waste calculation
+                                    # record the placed rectangle
                                     placed_rects.append({
                                         "x": float(x),
                                         "y": float(y),
@@ -599,144 +617,165 @@ if st.button("Run Optimizer"):
                                         "rotated": rotated
                                     })
 
-                                    # ONLY NAME (no dimensions inside rectangles)
-                                    ax.text(x + cut_w/2, y + cut_l/2, job['name'],
-                                            ha='center', va='center', fontsize=7)
+                                    # Show job name AND dimensions inside rectangles
+                                    ax.text(x + cut_w/2, y + cut_l/2, 
+                                           f"{job['name']}\n{int(cut_w)}×{int(cut_l)}",
+                                           ha='center', va='center', fontsize=7, weight='bold')
 
                             # move Y cursor after this block's rows
                             y_cursor += total_rows * cut_l
 
                     # ----------------------------
-                    # Compute & draw exact waste polygons (Option A - grid placement)
+                    # Compute & draw exact waste areas (improved logic)
                     # ----------------------------
-                    waste_legend = []   # <-- ADD THIS
-
-                    try:
-                        from shapely.geometry import box as shapely_box, Polygon, MultiPolygon
-                        from shapely.ops import polygonize, unary_union
-                        shapely_available = True
-                    except Exception:
-                        shapely_available = False
-
-                    if shapely_available and placed_rects:
-                        # build shapely polygons for placed rectangles
-                        rect_polys = []
+                    waste_legend = []
+                    
+                    if placed_rects:
+                        # Group rectangles by their Y position to identify rows
+                        rows_data = {}
                         for r in placed_rects:
-                            # shapely box: (minx, miny, maxx, maxy)
-                            rect_polys.append(
-                                shapely_box(
-                                    r["x"],
-                                    s_length - (r["y"] + r["h"]),   # FIX: convert top-origin to bottom-origin
-                                    r["x"] + r["w"],
-                                    s_length - r["y"]
-                                )
-                            )
-
-
-                        used_union = unary_union(rect_polys)
-                        sheet_poly = shapely_box(0, 0, s_width, s_length)
-                        # raw difference
-                        raw_waste = sheet_poly.difference(used_union)
-
-                        # fix invalidities and force ring boundaries
-                        clean = raw_waste.buffer(0)
-
-                        # extract individual polygons (splits all disconnected regions)
-                        waste_poly = list(polygonize(clean))
+                            y_key = r["y"]
+                            if y_key not in rows_data:
+                                rows_data[y_key] = {
+                                    "rects": [],
+                                    "max_x": 0,
+                                    "height": r["h"]
+                                }
+                            rows_data[y_key]["rects"].append(r)
+                            rows_data[y_key]["max_x"] = max(rows_data[y_key]["max_x"], r["x"] + r["w"])
                         
-
-                        # draw waste polygons (could be Polygon or MultiPolygon)
-                        if isinstance(waste_poly, (Polygon, MultiPolygon)):
-                            polys = [waste_poly] if isinstance(waste_poly, Polygon) else list(waste_poly.geoms)
-                            for poly in waste_poly:
-                                # convert shapely polygon → plotting coords
-                                x_coords, y_coords_raw = poly.exterior.xy
-                                y_coords = [s_length - y for y in y_coords_raw]
-
-                                ax.fill(
-                                    x_coords, y_coords,
-                                    facecolor='lightgray', alpha=0.4, edgecolor='black'
-                                )
-
-                                # bounding box
-                                minx, miny, maxx, maxy = poly.bounds
-                                wb = maxx - minx
-                                hh = maxy - miny
-                                area = poly.area
-
-                                waste_legend.append({
-                                    "name": f"Waste {len(waste_legend) + 1}",
-                                    "w": int(wb),
-                                    "h": int(hh),
-                                    "area": int(area)
-                                })
-
-
-                                # label position
-                                cx, cy = poly.representative_point().x, poly.representative_point().y
-
-                                # ax.text(
-                                #     cx, cy,
-                                #     f"WASTE\n{int(wb)}×{int(hh)} mm\n{int(area)} mm²",
-                                #     ha='center', va='center', fontsize=8, color='black'
-                                # )
-
-
+                        # Draw waste for each row individually
+                        for y_pos in sorted(rows_data.keys()):
+                            row = rows_data[y_pos]
+                            max_x = row["max_x"]
+                            row_height = row["height"]
+                            
+                            # Right-side waste for this specific row
+                            if max_x < s_width:
+                                waste_w = s_width - max_x
+                                waste_h = row_height
+                                
+                                if waste_w > 0.5 and waste_h > 0.5:
+                                    ax.add_patch(
+                                        patches.Rectangle(
+                                            (max_x, y_pos),
+                                            waste_w,
+                                            waste_h,
+                                            facecolor='lightgray',
+                                            alpha=0.4,
+                                            edgecolor='red',
+                                            linewidth=1.5,
+                                            linestyle='--'
+                                        )
+                                    )
+                                    
+                                    waste_area = int(waste_w * waste_h)
+                                    waste_legend.append({
+                                        "name": f"Waste {len(waste_legend) + 1}",
+                                        "w": int(waste_w),
+                                        "h": int(waste_h),
+                                        "area": waste_area
+                                    })
+                                    
+                                    # Add dimension text
+                                    ax.text(
+                                        max_x + waste_w/2, 
+                                        y_pos + waste_h/2,
+                                        f"{int(waste_w)}×{int(waste_h)}",
+                                        ha='center', va='center', 
+                                        fontsize=7, color='red', 
+                                        weight='bold',
+                                        bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8)
+                                    )
+                        
+                        # Find overall max Y used
+                        if rows_data:
+                            max_y_used = max(y + rows_data[y]["height"] for y in rows_data.keys())
                         else:
-                            # fallback: if shapely returns something unexpected, show a simple bottom waste
-                            if y_cursor < s_length:
-                                waste_h = s_length - y_cursor
-                                waste_w = s_width
+                            max_y_used = 0
+                        
+                        # Bottom waste (horizontal strip) - full width
+                        if max_y_used < s_length:
+                            waste_w_bottom = s_width
+                            waste_h_bottom = s_length - max_y_used
+                            
+                            if waste_w_bottom > 0.5 and waste_h_bottom > 0.5:
                                 ax.add_patch(
                                     patches.Rectangle(
-                                        (0, y_cursor),
-                                        waste_w,
-                                        waste_h,
-                                        facecolor='orange',
-                                        alpha=0.35,
-                                        edgecolor='black',
-                                        linewidth=1
+                                        (0, max_y_used),
+                                        waste_w_bottom,
+                                        waste_h_bottom,
+                                        facecolor='lightgray',
+                                        alpha=0.4,
+                                        edgecolor='red',
+                                        linewidth=2,
+                                        linestyle='--'
                                     )
                                 )
+                                
+                                waste_area_bottom = int(waste_w_bottom * waste_h_bottom)
                                 waste_legend.append({
                                     "name": f"Waste {len(waste_legend) + 1}",
-                                    "w": int(waste_w),
-                                    "h": int(waste_h),
-                                    "area": int(waste_w * waste_h)
+                                    "w": int(waste_w_bottom),
+                                    "h": int(waste_h_bottom),
+                                    "area": waste_area_bottom
                                 })
-
-                    else:
-                        # shapely not available or no placed rects — fallback to simple bottom waste rectangle
-                        if y_cursor < s_length:
-                            waste_h = s_length - y_cursor
-                            waste_w = s_width
-                            ax.add_patch(
-                                patches.Rectangle(
-                                    (0, y_cursor), waste_w, waste_h,
-                                    facecolor='lightgray', alpha=0.35,
-                                    edgecolor='black', linewidth=1
+                                
+                                # Add dimension text
+                                ax.text(
+                                    waste_w_bottom/2, 
+                                    max_y_used + waste_h_bottom/2,
+                                    f"{int(waste_w_bottom)}×{int(waste_h_bottom)}",
+                                    ha='center', va='center', 
+                                    fontsize=9, color='red', 
+                                    weight='bold',
+                                    bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8)
                                 )
+                    
+                    # Fallback if no rectangles were placed
+                    if not waste_legend:
+                        # Entire sheet is waste
+                        waste_w = s_width
+                        waste_h = s_length
+                        waste_area_total = int(waste_w * waste_h)
+                        
+                        ax.add_patch(
+                            patches.Rectangle(
+                                (0, 0),
+                                waste_w,
+                                waste_h,
+                                facecolor='lightgray',
+                                alpha=0.4,
+                                edgecolor='red',
+                                linewidth=2,
+                                linestyle='--'
                             )
-                            waste_legend.append({
-                                "name": f"Waste {len(waste_legend) + 1}",
-                                "w": int(waste_w),
-                                "h": int(waste_h),
-                                "area": int(waste_w * waste_h)
-                            })
+                        )
+                        
+                        waste_legend.append({
+                            "name": f"Waste {len(waste_legend) + 1}",
+                            "w": int(waste_w),
+                            "h": int(waste_h),
+                            "area": waste_area_total
+                        })
+                        
 
-                            # # Center position
-                            # cx = waste_w / 2
-                            # cy = y_cursor + waste_h / 2
-                            # waste_text = f"WASTE\n{int(waste_w)}×{int(waste_h)} mm\n{int(waste_w * waste_h)} mm²"
-                            # # ax.text(cx, cy, waste_text, ha='center', va='center', fontsize=9, color='black')
+                        ax.text(
+                            waste_w/2, waste_h/2,
+                            f"{int(waste_w)}×{int(waste_h)}",
+                            ha='center', va='center', 
+                            fontsize=10, color='red', 
+                            weight='bold',
+                            bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8)
+                        )
 
                     # ---------------------------------------------------
-                    # Build LEGEND inside the plot (top-right corner)
+                    # Build LEGEND inside the plot
                     # ---------------------------------------------------
                     handles = []
                     labels = []
                     for name, dims in legend_items.items():
-                        # safe guard: find a job idx for color mapping; if not found default 0
+                        # safe guard: find a job idx for color mapping
                         try:
                             job_idx_for_name = next(j['idx'] for j in jobs if j['name'] == name)
                         except StopIteration:
@@ -754,37 +793,67 @@ if st.button("Run Optimizer"):
                     for w in waste_legend:
                         patch = patches.Patch(
                             facecolor='lightgray',
-                            edgecolor='black',
-                            alpha=0.35,
-                            label=f"{w['name']} – {w['w']}×{w['h']} mm ({w['area']} mm²)"
+                            edgecolor='red',
+                            linestyle='--',
+                            linewidth=2,
+                            alpha=0.4,
+                            label=f"{w['name']} – {w['w']}×{w['h']} mm ({w['area']:,} mm²)"
                         )
                         handles.append(patch)
                         labels.append(
-                            f"{w['name']} – {w['w']}×{w['h']} mm ({w['area']} mm²)"
+                            f"{w['name']} – {w['w']}×{w['h']} mm ({w['area']:,} mm²)"
                         )
-
 
                     # Shrink plot to make space for legend on the right
                     box = ax.get_position()
-                    # ax.set_position([box.x0, box.y0, box.width * 0.78, box.height])   # 22% extra space on right
+                    ax.set_position([box.x0, box.y0, box.width * 0.75, box.height])
 
                     ax.legend(
                         handles, labels,
-                        loc='upper right',
+                        loc='center left',
+                        bbox_to_anchor=(1, 0.5),
                         fontsize=8,
                         frameon=True,
-                        borderpad=0.4,
-                        labelspacing=0.3,
-                        framealpha=0.9
+                        borderpad=0.8,
+                        labelspacing=0.5,
+                        framealpha=0.95
                     )
 
-                    # Summary waste annotation (keeps original red text)
-                    ax.text(
-                        s_width/2, s_length - 8,
-                        f"Total Waste = {p['waste_area']} mm²",
-                        fontsize=9, color='red', ha='center'
-                    )
+                    # Summary waste annotation
+                    # ax.text(
+                    #     s_width/2, -20,
+                    #     f"Total Waste = {p['waste_area']:,} mm²",
+                    #     fontsize=10, color='red', ha='center', weight='bold'
+                    # )
 
                     st.pyplot(fig, use_container_width=True)
+                    
+                    # Store figure for PDF export
+                    all_figures.append(fig)
+                
+                # =========================================
+                # PDF EXPORT FUNCTIONALITY
+                # =========================================
+                if all_figures:
+                    st.divider()
+                    st.subheader("📥 Export Visualizations")
+                    
+                    # Create PDF in memory
+                    pdf_buffer = io.BytesIO()
+                    
+                    with PdfPages(pdf_buffer) as pdf:
+                        for fig in all_figures:
+                            pdf.savefig(fig, bbox_inches='tight')
+                    
+                    pdf_buffer.seek(0)
+                    
+                    # Download button
+                    st.download_button(
+                        label="📥 Download All Visualizations as PDF",
+                        data=pdf_buffer,
+                        file_name="cutting_layouts.pdf",
+                        mime="application/pdf",
+                        key="download_pdf"
+                    )
 
-
+                    
